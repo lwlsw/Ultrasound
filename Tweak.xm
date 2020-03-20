@@ -9,6 +9,8 @@
 #import "Headers.h"
 #import "NSObject+SafeKVC.h"
 #import "_ABVolumeHUDOrientationManager.h"
+#import "ABVolumeHUDSystemVolumeInfoProvider.h"
+#import "ABVolumeHUDSystemTapticFeedbackProvider.h"
 
 // Use boot backlight adjustment source as it will never be used by SpringBoard directly
 #define kWillowBacklightAdjustmentSource 15
@@ -36,16 +38,6 @@ static SBLockScreenViewControllerBase *getLockScreenViewController() {
     return nil;
 }
 
-static VolumeControl *getVolumeControl() {
-    Class iOS12Class = NSClassFromString(@"VolumeControl");
-    if (iOS12Class && [iOS12Class respondsToSelector:@selector(sharedVolumeControl)]) return [iOS12Class sharedVolumeControl];
-
-    Class iOS13Class = NSClassFromString(@"SBVolumeControl");
-    if (iOS13Class && [iOS13Class respondsToSelector:@selector(sharedInstance)]) return [iOS13Class sharedInstance];
-
-    return nil;
-}
-
 // MARK: - Settings
 
 static BOOL hasLoadedSettings = NO;
@@ -57,6 +49,7 @@ static BOOL showOLEDVolumeIcon = YES;
 static BOOL showOLEDVolumePercentage = YES;
 static BOOL enableHapticFeedback = YES;
 static NSString *themeName = nil;
+static NSString *darkModeThemeName = nil;
 static ABVolumeHUDStyle volumeStyle = ABVolumeHUDStyleIconic;
 static BOOL themeChanged = NO;
 static BOOL styleChanged = NO;
@@ -67,12 +60,13 @@ static void applySettings() {
     if (!enabled) [[ABVolumeHUDManager sharedManager].visibilityManager hideImmediatelyIfPossible];
     [ABVolumeHUDViewSettings sharedSettings].showOLEDVolumeIcon = showOLEDVolumeIcon;
     [ABVolumeHUDViewSettings sharedSettings].showOLEDVolumePercentage = showOLEDVolumePercentage;
-    [ABVolumeHUDManager sharedManager].theme = themeName ? [[NSClassFromString(themeName) alloc] init] : nil;
+    [ABVolumeHUDManager sharedManager].lightModeTheme = themeName ? [[NSClassFromString(themeName) alloc] init] : nil;
+    [ABVolumeHUDManager sharedManager].darkModeTheme = themeName ? [[NSClassFromString(darkModeThemeName) alloc] init] : nil;
     [ABVolumeHUDViewSettings sharedSettings].style = volumeStyle;
     [ABVolumeHUDViewSettings sharedSettings].enableHapticFeedback = enableHapticFeedback;
 
     // If we changed theme or style, show the volume HUD for a preview
-    if ((themeChanged || styleChanged) && enabled) [getVolumeControl() __us_presentVolumeHUDWithMode:ABVolumeHUDVolumeModeAudio];
+    if ((themeChanged || styleChanged) && enabled) [[ABVolumeHUDSystemVolumeInfoProvider activeVolumeControl] __us_presentVolumeHUDWithMode:ABVolumeHUDVolumeModeAudio];
 }
 
 static void loadSettings() {
@@ -99,8 +93,13 @@ static void loadSettings() {
     if (settings && settings[@"ShowVolumePercentageOLED"]) showOLEDVolumePercentage = [settings[@"ShowVolumePercentageOLED"] boolValue];
     if (settings && settings[@"Theme"]) {
         NSString *newThemeName = [settings[@"Theme"] stringValue];
-        themeChanged = themeName && ![themeName isEqualToString:newThemeName];
+        themeChanged = hasLoadedSettings && themeName && ![themeName isEqualToString:newThemeName];
         themeName = newThemeName;
+    }
+    if (settings && settings[@"ThemeInDarkMode"]) {
+        NSString *newThemeName = [settings[@"ThemeInDarkMode"] stringValue];
+        themeChanged = hasLoadedSettings && (themeChanged || (darkModeThemeName == nil) != (newThemeName == nil) || (darkModeThemeName && ![darkModeThemeName isEqualToString:newThemeName])); // this sucks
+        darkModeThemeName = newThemeName;
     }
     if (settings && settings[@"Style"]) {
         ABVolumeHUDStyle newStyle = (ABVolumeHUDStyle)[settings[@"Style"] integerValue];
@@ -382,6 +381,7 @@ static BOOL isDisplayingOLEDVolume = NO;
     [ABVolumeHUDManager sharedManager].tapticFeedbackProvider = [[ABVolumeHUDSystemTapticFeedbackProvider alloc] init];
     [ABVolumeHUDManager sharedManager].volumeInfoProvider = [[ABVolumeHUDSystemVolumeInfoProvider alloc] init];
     [ABVolumeHUDManager sharedManager].orientation = [self activeInterfaceOrientation];
+    loadSettings();
 }
 
 %end
@@ -476,8 +476,6 @@ static BOOL isDisplayingOLEDVolume = NO;
 
 %ctor {
     @autoreleasepool {
-        applySettings();
-        loadSettings();
 
         [[NSNotificationCenter defaultCenter] addObserverForName:kOLEDWindowTappedNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *note) {
             if ([%c(SBTapToWakeController) isTapToWakeSupported]) wakeScreen();
